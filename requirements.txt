@@ -1,0 +1,9 @@
+flask
+gunicorn
+ollama
+groq
+google-genai
+ddgs
+python-docx
+python-pptx
+Pillow
