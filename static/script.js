@@ -39,6 +39,21 @@ function setBusy(busy) {
   imgBtn.disabled = busy;
 }
 
+async function initWelcome() {
+  try {
+    const res = await fetch("/api/welcome");
+    const data = await res.json();
+    addMessage("Dhrubo", data.welcome_message || "Hey! I'm Dhrubo.");
+    if (!data.site_enabled) {
+      setBusy(true);
+      msgInput.placeholder = "Guest chat is paused right now...";
+    }
+  } catch (err) {
+    addMessage("Dhrubo", "Hey! I'm Dhrubo. What's on your mind?");
+  }
+}
+initWelcome();
+
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const text = msgInput.value.trim();
