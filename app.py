@@ -20,6 +20,7 @@ from pathlib import Path
 from flask import Flask, request, jsonify, render_template, session, send_file, abort
 
 import assistant_chat as core
+import config
 
 core.ensure_memory_folders()
 
@@ -113,6 +114,40 @@ def log_exchange(sid, state, user_text, reply):
 
 
 # ==================== Routes ====================
+
+@app.route("/api/diag")
+def api_diag():
+    """Shell ফ্রি টায়ারে নেই, তাই browser থেকেই connectivity টেস্ট করার জন্য এই endpoint।
+    /api/diag খুললে Groq/Gemini-তে সরাসরি পৌঁছানো যাচ্ছে কিনা দেখাবে।"""
+    import urllib.request
+    results = {}
+
+    for name, url in [
+        ("groq_dns_https", "https://api.groq.com"),
+        ("google_dns_https", "https://generativelanguage.googleapis.com"),
+    ]:
+        try:
+            urllib.request.urlopen(url, timeout=8)
+            results[name] = "OK (reached)"
+        except Exception as e:
+            results[name] = f"FAILED: {type(e).__name__}: {e}"
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=config.GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=core.ONLINE_MODEL,
+            messages=[{"role": "user", "content": "say OK"}],
+        )
+        results["groq_real_call"] = "OK: " + (resp.choices[0].message.content or "")[:100]
+    except Exception as e:
+        results["groq_real_call"] = f"FAILED: {type(e).__name__}: {e}"
+
+    results["groq_key_present"] = bool(config.GROQ_API_KEY)
+    results["gemini_key_present"] = bool(config.GEMINI_API_KEY)
+
+    return jsonify(results)
+
 
 @app.route("/")
 def home():
