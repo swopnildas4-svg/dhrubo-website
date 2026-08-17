@@ -1,16 +1,3 @@
-"""
-Dhrubo Website - Flask backend.
-
-- যে কেউ এসে সাধারণ চ্যাট করতে পারবে (guest persona - Swopnil সম্পর্কে শুধু basic তথ্য জানবে)
-- "I am Swopnil" লিখে গোপন কোড দিলে সেই session Swopnil হিসেবে verified হয়ে যাবে,
-  তখন full personal persona ব্যবহার হবে
-- Word doc/ছবি বানানো যাবে (settings দিয়ে guest-দের জন্য চালু/বন্ধ করা যায়)
-- PC-control action (shutdown/volume/screenshot ইত্যাদি) ইচ্ছাকৃতভাবে এখানে নেই -
-  শুধু নিরাপদ conversational/creative ফিচারগুলোই আছে
-- desktop app থেকে /api/admin/* endpoint দিয়ে ম্যানুয়ালি chat log টেনে আনা যায়,
-  আর secret code/settings বদলানো যায় (X-Admin-Key header দিয়ে সুরক্ষিত)
-"""
-
 import os
 import json
 import time
@@ -31,6 +18,7 @@ DATA_DIR = Path(__file__).parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 SETTINGS_FILE = DATA_DIR / "settings.json"
 CHATLOG_FILE = DATA_DIR / "chat_log.json"
+USAGE_FILE = DATA_DIR / "usage.json"
 
 # শুধু desktop app-এর জন্য - এটা user-facing "swopnil_code" থেকে সম্পূর্ণ আলাদা ও গোপন
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
@@ -39,7 +27,33 @@ DEFAULT_SETTINGS = {
     "swopnil_code": "Alok Das",
     "allow_guest_docx": True,
     "allow_guest_image": True,
+    "site_enabled": True,  # False করলে guest-দের জন্য চ্যাট বন্ধ (maintenance mode) - Swopnil-verified session-এ প্রভাব পড়ে না
+    "welcome_message": "Hey! I'm Dhrubo. What's on your mind?",
+    "guest_daily_limit": 0,  # 0 = সীমাহীন, নাহলে guest-রা মিলে প্রতিদিন সর্বোচ্চ এতগুলো মেসেজ পাঠাতে পারবে
 }
+
+
+def _today():
+    return time.strftime("%Y-%m-%d")
+
+
+def load_usage():
+    if USAGE_FILE.exists():
+        try:
+            with open(USAGE_FILE, encoding="utf-8") as f:
+                data = json.load(f)
+            if data.get("date") == _today():
+                return data
+        except Exception:
+            pass
+    return {"date": _today(), "count": 0}
+
+
+def increment_usage():
+    data = load_usage()
+    data["count"] += 1
+    with open(USAGE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f)
 
 GUEST_SYSTEM_PROMPT = """You are Dhrubo, a friendly AI assistant running on a public website.
 You were built by Swopnil Das (an Electrical & Electronic Engineering student) as his personal project - that is your only creator, never invent another origin story.
@@ -154,6 +168,15 @@ def home():
     return render_template("index.html")
 
 
+@app.route("/api/welcome")
+def api_welcome():
+    settings = load_settings()
+    return jsonify({
+        "welcome_message": settings.get("welcome_message", DEFAULT_SETTINGS["welcome_message"]),
+        "site_enabled": settings.get("site_enabled", True),
+    })
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     data = request.get_json(force=True) or {}
@@ -184,6 +207,14 @@ def api_chat():
         log_exchange(sid, state, user_text, reply)
         return jsonify({"reply": reply, "is_swopnil": False})
 
+    # ---- Maintenance mode / daily limit (শুধু guest-দের জন্য, Swopnil-verified হলে প্রভাব নেই) ----
+    if not state["is_swopnil"]:
+        if not settings.get("site_enabled", True):
+            return jsonify({"reply": "Dhrubo is taking a short break right now - please check back later!", "is_swopnil": False})
+        limit = settings.get("guest_daily_limit", 0)
+        if limit and load_usage()["count"] >= limit:
+            return jsonify({"reply": "We've hit today's chat limit for guests - please try again tomorrow!", "is_swopnil": False})
+
     # ---- সাধারণ চ্যাট ----
     state["conversation"].append({"role": "user", "content": user_text})
     try:
@@ -191,6 +222,9 @@ def api_chat():
     except Exception as e:
         reply = f"Sorry, something went wrong: {e}"
     state["conversation"].append({"role": "assistant", "content": reply})
+
+    if not state["is_swopnil"]:
+        increment_usage()
 
     log_exchange(sid, state, user_text, reply)
     return jsonify({"reply": reply, "is_swopnil": state["is_swopnil"]})
@@ -254,6 +288,28 @@ def _check_admin():
         abort(401)
 
 
+@app.route("/api/admin/stats")
+def admin_stats():
+    _check_admin()
+    usage = load_usage()
+    total_logged = 0
+    if CHATLOG_FILE.exists():
+        try:
+            with open(CHATLOG_FILE, encoding="utf-8") as f:
+                total_logged = len(json.load(f))
+        except Exception:
+            pass
+    return jsonify({"today_guest_messages": usage["count"], "date": usage["date"], "total_logged_exchanges": total_logged})
+
+
+@app.route("/api/admin/clear_messages", methods=["POST"])
+def admin_clear_messages():
+    _check_admin()
+    with open(CHATLOG_FILE, "w", encoding="utf-8") as f:
+        json.dump([], f)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/admin/messages")
 def admin_messages():
     _check_admin()
@@ -274,7 +330,8 @@ def admin_settings():
         return jsonify(load_settings())
     data = request.get_json(force=True) or {}
     settings = load_settings()
-    for key in ("swopnil_code", "allow_guest_docx", "allow_guest_image"):
+    for key in ("swopnil_code", "allow_guest_docx", "allow_guest_image",
+                "site_enabled", "welcome_message", "guest_daily_limit"):
         if key in data:
             settings[key] = data[key]
     save_settings(settings)
