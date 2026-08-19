@@ -36,10 +36,6 @@ USAGE_FILE = DATA_DIR / "usage.json"
 # শুধু desktop app-এর জন্য - এটা user-facing "swopnil_code" থেকে সম্পূর্ণ আলাদা ও গোপন
 ADMIN_API_KEY = os.environ.get("ADMIN_API_KEY", "")
 
-# শুধু ফোনের MacroDroid/WhatsApp connector ব্যবহার করবে - guest বা admin key থেকে আলাদা,
-# তাই WhatsApp automation ফাঁস হলেও ওটা দিয়ে admin settings বদলানো যাবে না
-WHATSAPP_API_KEY = os.environ.get("WHATSAPP_API_KEY", "")
-
 DEFAULT_SETTINGS = {
     "swopnil_code": "Alok Das",
     "allow_guest_docx": True,
@@ -47,10 +43,9 @@ DEFAULT_SETTINGS = {
     "site_enabled": True,  # False করলে guest-দের জন্য চ্যাট বন্ধ (maintenance mode) - Swopnil-verified session-এ প্রভাব পড়ে না
     "welcome_message": "Hey! I'm Dhrubo. What's on your mind?",
     "guest_daily_limit": 0,  # 0 = সীমাহীন, নাহলে guest-রা মিলে প্রতিদিন সর্বোচ্চ এতগুলো মেসেজ পাঠাতে পারবে
-    # --- ফোন অ্যাপ/WhatsApp-এ Swopnil নিজের জন্য PC থেকে control করার settings ---
+    # --- ফোন অ্যাপে Swopnil নিজের জন্য PC থেকে control করার settings ---
     "swopnil_docx_enabled": True,   # False করলে ফোন/website-এ Swopnil নিজেও Word doc বানাতে পারবে না
     "swopnil_image_enabled": True,  # False করলে ফোন/website-এ Swopnil নিজেও ছবি বানাতে পারবে না
-    "whatsapp_autoreply_enabled": True,  # False করলে WhatsApp auto-reply সম্পূর্ণ বন্ধ (PC থেকে যেকোনো সময় off করা যাবে)
 }
 
 
@@ -305,71 +300,6 @@ def download(filename):
     return send_file(str(safe_path), as_attachment=False)
 
 
-# ==================== WhatsApp connector (MacroDroid, phone-only) ====================
-# MacroDroid ফোনেই ২ মিনিট টাইমার রাখবে; Swopnil নিজে রিপ্লাই না দিলে এই endpoint কল হবে।
-# এটা guest chat থেকে আলাদা - সবসময় পূর্ণ পরিচয় (facts/rules সহ) নিয়ে জবাব দেয়,
-# কারণ এটা তোমার হয়েই কথা বলছে, একজন সাধারণ visitor না।
-
-WHATSAPP_SESSIONS = {}
-MAX_WHATSAPP_SESSIONS = 200  # অনেক কনট্যাক্ট জমে RAM বেশি না খাওয়ার জন্য একটা ক্যাপ
-
-WHATSAPP_SYSTEM_EXTRA = (
-    "\n\nএখন তুমি Swopnil-এর WhatsApp-এ তার হয়ে কথা বলছো, কারণ ও এই মুহূর্তে "
-    "উপলব্ধ নেই (মেসেজের ২ মিনিটের মধ্যে রিপ্লাই দেয়নি)। প্রথম মেসেজে সংক্ষেপে "
-    "নিজের পরিচয় দাও (Dhrubo, Swopnil-এর AI assistant, ও এখন উপলব্ধ নেই), এরপর "
-    "স্বাভাবিক বন্ধুর মতো কথোপকথন চালিয়ে যাও। কখনো নিজেকে আসল Swopnil বলে দাবি "
-    "করবে না, আর কোনো app খোলা/শাটডাউন/ইমেইল পাঠানোর মতো action করার চেষ্টা করবে না।"
-)
-
-
-def _check_whatsapp_key():
-    key = request.headers.get("X-Whatsapp-Key", "")
-    if not WHATSAPP_API_KEY or key != WHATSAPP_API_KEY:
-        abort(401)
-
-
-def _get_whatsapp_convo(contact_id):
-    if contact_id not in WHATSAPP_SESSIONS:
-        if len(WHATSAPP_SESSIONS) >= MAX_WHATSAPP_SESSIONS:
-            oldest = next(iter(WHATSAPP_SESSIONS))
-            del WHATSAPP_SESSIONS[oldest]
-        WHATSAPP_SESSIONS[contact_id] = [
-            {"role": "system", "content": core.get_system_prompt() + WHATSAPP_SYSTEM_EXTRA}
-        ]
-    return WHATSAPP_SESSIONS[contact_id]
-
-
-@app.route("/api/whatsapp/reply", methods=["POST"])
-def whatsapp_reply():
-    _check_whatsapp_key()
-    settings = load_settings()
-    if not settings.get("whatsapp_autoreply_enabled", True):
-        return jsonify({"reply": None, "disabled": True})
-
-    data = request.get_json(force=True) or {}
-    contact_id = (data.get("contact_id") or "unknown").strip()
-    text = (data.get("text") or "").strip()
-    if not text:
-        return jsonify({"reply": ""})
-
-    convo = _get_whatsapp_convo(contact_id)
-    convo.append({"role": "user", "content": text})
-    try:
-        reply = core.get_full_response(convo, online=True)
-    except Exception as e:
-        reply = f"Sorry, something went wrong: {e}"
-    convo.append({"role": "assistant", "content": reply})
-
-    append_chat_log({
-        "session": f"whatsapp:{contact_id[:8]}",
-        "who": "WhatsApp",
-        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "user": text,
-        "dhrubo": reply,
-    })
-    return jsonify({"reply": reply})
-
-
 # ==================== Desktop-app-only admin endpoints ====================
 
 def _check_admin():
@@ -422,7 +352,7 @@ def admin_settings():
     settings = load_settings()
     for key in ("swopnil_code", "allow_guest_docx", "allow_guest_image",
                 "site_enabled", "welcome_message", "guest_daily_limit",
-                "swopnil_docx_enabled", "swopnil_image_enabled", "whatsapp_autoreply_enabled"):
+                "swopnil_docx_enabled", "swopnil_image_enabled"):
         if key in data:
             settings[key] = data[key]
     save_settings(settings)
