@@ -21,6 +21,52 @@ config.py, requirements.txt, templates/, static/).
 | `GEMINI_API_KEY` | your Gemini key |
 | `FLASK_SECRET_KEY` | any random long string |
 | `ADMIN_API_KEY` | any random long string (this is what the desktop Settings window uses - keep it secret, different from the chat "identity code") |
+| `WHATSAPP_API_KEY` | a third random long string, different from the other two - only MacroDroid on your phone will know this |
+
+## 7. Turn the site into an installable phone app (PWA)
+Two new files (`static/manifest.json`, `static/service-worker.js`) plus small edits to
+`templates/index.html` make Chrome on Android offer "Install app" / "Add to Home screen" -
+after that it opens full-screen with its own icon, just like a normal app.
+
+You still need to add two icon image files to `static/`:
+- `static/icon-192.png` (192x192)
+- `static/icon-512.png` (512x512)
+
+Export these from your existing `dhrubo_ai.ico` or the character art (any square PNG works -
+an online ico-to-png/resizer site can do this for free, no install needed).
+
+Once deployed, open `https://dhrubo-website.onrender.com` in Chrome on your phone → menu (⋮) →
+**"Install app"**. That's the whole "app install" step - no APK, no Android Studio, no Play Store.
+
+If you want an actual `.apk` file instead (e.g. to install without opening Chrome first), feed
+this same URL into [pwabuilder.com](https://www.pwabuilder.com) (free, no account needed) - it
+packages the PWA into a signed APK you can download and install directly.
+
+## 8. WhatsApp auto-reply (MacroDroid on your phone)
+A new endpoint `/api/whatsapp/reply` is ready for this - it always replies with your full
+Dhrubo persona (facts/rules included), introduces itself as Dhrubo, and never claims to be you.
+
+In MacroDroid, build one macro:
+- **Trigger:** Notification received → WhatsApp
+- **Action 1:** Wait 2 minutes
+- **Condition:** you haven't replied in that chat yourself (see MacroDroid's "cancel on new trigger"
+  pattern - re-triggering the same macro when you send a message yourself, which then stops the
+  waiting instance)
+- **Action 2:** HTTP Request → POST to `https://dhrubo-website.onrender.com/api/whatsapp/reply`
+  - Header: `X-Whatsapp-Key: <the WHATSAPP_API_KEY you set above>`
+  - Body (JSON): `{"contact_id": "<sender name>", "text": "<the message text>"}`
+- **Action 3:** Take the `reply` field from the response and use WhatsApp's "reply to notification"
+  action to send it
+- **Action 4:** Send yourself a local notification: "Dhrubo replied for you"
+
+You (or the PC admin panel via `/api/admin/settings`) can turn this off anytime by setting
+`whatsapp_autoreply_enabled` to `false` - no redeploy needed.
+
+## 9. Render free tier waking up
+The free tier sleeps after ~15 minutes of no traffic and takes 30-60s to wake on the first
+request after that - so the very first WhatsApp auto-reply or app open after a quiet period will
+be slow once. This is normal for the free tier; a workaround (optional, still free) is a service
+like [cron-job.org](https://cron-job.org) pinging `/api/welcome` every 10 minutes to keep it awake.
 
 ## 5. Deploy
 Render will build and give you a URL like `https://dhrubo-xxxx.onrender.com`.
